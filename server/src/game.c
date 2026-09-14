@@ -1,101 +1,143 @@
 #include "../lib/all.h"
 
-int WORDCOUNT_NORMAL = 0;
-int WORDCOUNT_HARD = 0;
-int WORDCOUNT_INFO = 0;
-int WORDCOUNT_FREAKY = 0;
+/**
+ * Une liste de mots chargée en mémoire.
+ * @param path chemin du fichier source.
+ * @param words tableau de mots (taille count).
+ * @param count nombre de mots effectivement chargés.
+ */
+typedef struct {
+    const char* path;
+    char** words;
+    int count;
+} WordList;
 
-/* Initialise les compteurs de mots pour les deux niveaux de difficulté.
-   Retourne EXIT_SUCCESS si OK, EXIT_FAILURE en cas d'erreur */
-int init_game_manager() {
-    int n = count_words("assets/wordlist.txt");
-    if (n < 0) {
-        fprintf(stderr, "game_manager: failed to count words in assets/wordlist.txt\n");
-        return EXIT_FAILURE;
-    }
-    WORDCOUNT_NORMAL = n;
+/* Les quatre listes sont chargées une seule fois au démarrage : auparavant
+   chaque lancement de partie rouvrait le fichier et réallouait ~500 chaînes. */
+static WordList word_lists[] = {
+    [WORDS_DIFFICULTY_NORMAL] = { "assets/wordlist.txt",        NULL, 0 },
+    [WORDS_DIFFICULTY_HARD]   = { "assets/wordlist_hard.txt",   NULL, 0 },
+    [WORDS_DIFFICULTY_INFO]   = { "assets/wordlist_info.txt",   NULL, 0 },
+    [WORDS_DIFFICULTY_FREAKY] = { "assets/wordlist_freaky.txt", NULL, 0 },
+};
 
-    n = count_words("assets/wordlist_hard.txt");
-    if (n < 0) {
-        fprintf(stderr, "game_manager: failed to count words in assets/wordlist_hard.txt\n");
-        return EXIT_FAILURE;
-    }
-    WORDCOUNT_HARD = n;
+static const int WORD_LIST_COUNT = (int)(sizeof(word_lists) / sizeof(word_lists[0]));
 
-    n = count_words("assets/wordlist_info.txt");
-    if (n < 0) {
-        fprintf(stderr, "game_manager: failed to count words in assets/wordlist_info.txt\n");
-        return EXIT_FAILURE;
-    }
-    WORDCOUNT_INFO = n;
-
-    n = count_words("assets/wordlist_freaky.txt");
-    if (n < 0) {
-        fprintf(stderr, "game_manager: failed to count words in assets/wordlist_freaky.txt\n");
-        return EXIT_FAILURE;
-    }
-    WORDCOUNT_FREAKY = n;
-
-    return EXIT_SUCCESS;
+/** Retourne la liste correspondant à une difficulté, ou NULL si hors plage. */
+static WordList* word_list_for(WordsDifficulty difficulty) {
+    int index = (int)difficulty;
+    if (index < 0 || index >= WORD_LIST_COUNT) return NULL;
+    return &word_lists[index];
 }
 
-char** fetchWords(WordsDifficulty words_difficulty) { // Lit le fichier wordlist selon la difficulté
-    const char* filepath = (words_difficulty == WORDS_DIFFICULTY_NORMAL) ? "assets/wordlist.txt" :
-                           (words_difficulty == WORDS_DIFFICULTY_HARD) ? "assets/wordlist_hard.txt" :
-                           (words_difficulty == WORDS_DIFFICULTY_INFO) ? "assets/wordlist_info.txt" :
-                           "assets/wordlist_freaky.txt";
-    int wordcount = (words_difficulty == WORDS_DIFFICULTY_NORMAL) ? WORDCOUNT_NORMAL :
-                    (words_difficulty == WORDS_DIFFICULTY_HARD) ? WORDCOUNT_HARD :
-                    (words_difficulty == WORDS_DIFFICULTY_INFO) ? WORDCOUNT_INFO :
-                    WORDCOUNT_FREAKY;
+/** Charge un fichier de mots en mémoire. Retourne EXIT_SUCCESS ou EXIT_FAILURE. */
+static int load_word_list(WordList* list) {
+    int capacity = count_words(list->path);
+    if (capacity < 0) {
+        fprintf(stderr, "game_manager: failed to read %s\n", list->path);
+        return EXIT_FAILURE;
+    }
+    if (capacity == 0) {
+        fprintf(stderr, "game_manager: %s contains no word\n", list->path);
+        return EXIT_FAILURE;
+    }
 
-    FILE* file = fopen(filepath, "r");
+    FILE* file = fopen(list->path, "r");
     if (!file) {
         perror("Failed to open words file");
-        return NULL;
+        return EXIT_FAILURE;
     }
-    char** words = (char**)malloc(sizeof(char*) * wordcount);
+
+    char** words = (char**)calloc((size_t)capacity, sizeof(char*));
     if (!words) {
         perror("Failed to allocate memory for words");
         fclose(file);
-        return NULL;
+        return EXIT_FAILURE;
     }
+
     char buffer[32];
     int count = 0;
-    while (fgets(buffer, sizeof(buffer), file) && count < wordcount) {
+    while (count < capacity && fgets(buffer, sizeof(buffer), file)) {
+        size_t raw_len = strlen(buffer);
+        int truncated = (raw_len > 0 && buffer[raw_len - 1] != '\n');
+
         buffer[strcspn(buffer, "\n")] = 0; // Remove newline character
-        words[count] = (char*)malloc(strlen(buffer) + 1);
+
+        /* Une ligne plus longue que le tampon doit être consommée jusqu'au bout,
+           sinon son reste serait compté comme un mot supplémentaire. */
+        if (truncated) {
+            int c;
+            do { c = fgetc(file); } while (c != '\n' && c != EOF);
+        }
+
+        if (buffer[0] == '\0') continue; // ignore les lignes vides
+
+        words[count] = strdup(buffer);
         if (!words[count]) {
             perror("Failed to allocate memory for a word");
-            for (int j = 0; j < count; j++) {
-                free(words[j]);
-            }
+            for (int j = 0; j < count; j++) free(words[j]);
             free(words);
             fclose(file);
-            return NULL;
+            return EXIT_FAILURE;
         }
-        strcpy(words[count], buffer);
         count++;
     }
     fclose(file);
-    return words;
+
+    if (count < GAME_NB_WORDS) {
+        fprintf(stderr, "game_manager: %s has only %d words, %d required\n",
+                list->path, count, GAME_NB_WORDS);
+        for (int j = 0; j < count; j++) free(words[j]);
+        free(words);
+        return EXIT_FAILURE;
+    }
+
+    list->words = words;
+    list->count = count;
+    printf("Loaded %d words from %s\n", count, list->path);
+    return EXIT_SUCCESS;
+}
+
+int init_game_manager() {
+    for (int i = 0; i < WORD_LIST_COUNT; i++) {
+        if (load_word_list(&word_lists[i]) != EXIT_SUCCESS) {
+            destroy_game_manager();
+            return EXIT_FAILURE;
+        }
+    }
+    return EXIT_SUCCESS;
+}
+
+void destroy_game_manager(void) {
+    for (int i = 0; i < WORD_LIST_COUNT; i++) {
+        for (int j = 0; j < word_lists[i].count; j++) {
+            free(word_lists[i].words[j]);
+        }
+        free(word_lists[i].words);
+        word_lists[i].words = NULL;
+        word_lists[i].count = 0;
+    }
 }
 
 Word* generateWords(int count, Team start_team, WordsDifficulty words_difficulty, int nb_assassins) { //Trouver 25 mots au hasard parmis la liste des mots.
-    int wordcount = (words_difficulty == WORDS_DIFFICULTY_NORMAL) ? WORDCOUNT_NORMAL :
-                    (words_difficulty == WORDS_DIFFICULTY_HARD) ? WORDCOUNT_HARD :
-                    (words_difficulty == WORDS_DIFFICULTY_INFO) ? WORDCOUNT_INFO :
-                    WORDCOUNT_FREAKY;
+    if (count <= 0) return NULL;
 
-    Word* words = (Word*)malloc(sizeof(Word) * count);
-    if (!words) {
-        perror("Failed to allocate memory for words");
+    WordList* list = word_list_for(words_difficulty);
+    if (!list || !list->words) {
+        fprintf(stderr, "generateWords: word list %d is not loaded\n", (int)words_difficulty);
         return NULL;
     }
 
-    char ** sample_words = fetchWords(words_difficulty);
-    if (!sample_words) {
-        free(words);
+    /* Sans assez de mots distincts, la sélection sans remise ne pourrait pas
+       aboutir : on refuse la partie proprement plutôt que de boucler. */
+    if (list->count < count) {
+        fprintf(stderr, "generateWords: word list too small (%d words for %d cards)\n", list->count, count);
+        return NULL;
+    }
+
+    Word* words = (Word*)calloc((size_t)count, sizeof(Word));
+    if (!words) {
+        perror("Failed to allocate memory for words");
         return NULL;
     }
 
@@ -107,24 +149,24 @@ Word* generateWords(int count, Team start_team, WordsDifficulty words_difficulty
     int neutral_count = count - red_count - blue_count - nb_assassins;
     if (neutral_count < 0) neutral_count = 0;
 
-    int* already_used = calloc(wordcount, sizeof(int));
-    if (!already_used) {
-        perror("Failed to allocate memory for already_used");
+    /* Tirage sans remise par mélange partiel de Fisher-Yates : garantit
+       `count` indices distincts en temps linéaire, là où le tirage avec rejet
+       précédent pouvait retenter indéfiniment. */
+    int* indices = (int*)malloc(sizeof(int) * (size_t)list->count);
+    if (!indices) {
+        perror("Failed to allocate memory for the word index pool");
         free(words);
-        for (int j = 0; j < wordcount; j++) free(sample_words[j]);
-        free(sample_words);
         return NULL;
     }
+    for (int i = 0; i < list->count; i++) indices[i] = i;
 
-    // Sélectionne aléatoirement des mots dans la liste et les attribue à une équipe
     for (int i = 0; i < count; i++) {
-        int index;
-        do {
-            index = randint(0, wordcount - 1);
-        } while (already_used[index]);
-        already_used[index] = 1;
+        int pick = randint(i, list->count - 1);
+        int chosen = indices[pick];
+        indices[pick] = indices[i];
+        indices[i] = chosen;
 
-        strncpy(words[i].word, sample_words[index], sizeof(words[i].word) - 1);
+        strncpy(words[i].word, list->words[chosen], sizeof(words[i].word) - 1);
         words[i].word[sizeof(words[i].word) - 1] = '\0';
         words[i].team = (i < red_count) ? TEAM_RED :
             (i < red_count + blue_count) ? TEAM_BLUE :
@@ -133,11 +175,7 @@ Word* generateWords(int count, Team start_team, WordsDifficulty words_difficulty
         words[i].revealed = 0;
     }
 
-    // Libère la mémoire des mots chargés et du tableau already_used
-    for (int j = 0; j < wordcount; j++) free(sample_words[j]);
-    free(sample_words);
-    free(already_used);
-
+    free(indices);
     return words;
 }
 
@@ -203,15 +241,19 @@ int request_start_game(Codenames* codenames, TcpClient* client, char* message, A
     Team start_team = (rand() % 2 == 0) ? TEAM_RED : TEAM_BLUE;
 
     // Génère les mots pour le jeu avec la difficulté des mots choisie
-    game->words = generateWords(25, start_team, lobby->words_difficulty, lobby->nb_assassins);
-    shuffleWords(game->words, 25);
+    game->words = generateWords(GAME_NB_WORDS, start_team, lobby->words_difficulty, lobby->nb_assassins);
     if (!game->words) {
         printf("Failed to generate words for lobby %d\n", lobby->id);
         destroy_game(game);
+        lobby->status = LB_STATUS_WAITING;
+        send_server_error(codenames, client, "Failed to start the game");
         return EXIT_FAILURE;
     }
+    /* Le mélange doit venir après le contrôle de NULL : sinon un wordlist
+       illisible fait planter le serveur au lieu de refuser la partie. */
+    shuffleWords(game->words, GAME_NB_WORDS);
 
-    game->nb_words = 25;
+    game->nb_words = GAME_NB_WORDS;
     game->state = start_team == TEAM_RED ? GAMESTATE_TURN_RED_SPY : GAMESTATE_TURN_BLUE_SPY;
     game->can_guess = 0;
     lobby->game = game;
@@ -264,16 +306,28 @@ int request_submit_hint(Codenames* codenames, TcpClient* client, char* message, 
     }
 
     // Vérifie les arguments: nb_hint et hint_word
-    if (args.argc < 2) {
+    if (!args_require(args, 2)) {
         printf("Invalid submit hint from client %d : \"%s\"\n", client->id, message);
-        char msg[64];
-        format_to(msg, sizeof(msg), "%d %s", MSG_SERVER_ERROR, "Invalid hint format");
-        tcp_send_to_client(codenames, client->id, msg);
+        send_server_error(codenames, client, "Invalid hint format");
+        return EXIT_FAILURE;
+    }
+
+    // Seul l'espion de l'équipe dont c'est le tour peut donner un indice
+    if (user_can_act(lobby, client->id, ROLE_SPY) != EXIT_SUCCESS) {
+        printf("Client %d is not the active spy in lobby %d\n", client->id, lobby->id);
+        send_server_error(codenames, client, "You are not the spy of the active team");
         return EXIT_FAILURE;
     }
 
     int nb_hint = atoi((char*)args.argv[0]);
     char* hint_word = (char*)args.argv[1];
+
+    /* Borne le nombre de tentatives : `can_guess` en découle directement et
+       une valeur négative ou démesurée casserait la logique de tour. */
+    if (nb_hint < 0 || nb_hint > lobby->game->nb_words) {
+        send_server_error(codenames, client, "Invalid hint count");
+        return EXIT_FAILURE;
+    }
 
     printf("Client %d submitted hint: %s (%d)\n", client->id, hint_word, nb_hint);
 
@@ -295,6 +349,36 @@ int request_submit_hint(Codenames* codenames, TcpClient* client, char* message, 
     for (int i = 0; i < lobby->nb_players; i++) {
         tcp_send_to_client(codenames, lobby->users[i]->id, msg);
     }
+
+    return EXIT_SUCCESS;
+}
+
+Team active_team_of(GameState state) {
+    switch (state) {
+        case GAMESTATE_TURN_RED_SPY:
+        case GAMESTATE_TURN_RED_AGENT:
+            return TEAM_RED;
+        case GAMESTATE_TURN_BLUE_SPY:
+        case GAMESTATE_TURN_BLUE_AGENT:
+            return TEAM_BLUE;
+        default:
+            return TEAM_NONE;
+    }
+}
+
+int user_can_act(Lobby* lobby, int client_id, UserRole expected_role) {
+    if (!lobby || !lobby->game) return EXIT_FAILURE;
+
+    User* user = find_user_by_id(lobby, client_id);
+    if (!user) return EXIT_FAILURE;
+
+    Team active = active_team_of(lobby->game->state);
+    if (active == TEAM_NONE) return EXIT_FAILURE;
+
+    /* Le serveur fait autorité : ni l'équipe adverse ni un mauvais rôle
+       ne doivent pouvoir agir, même si le client envoie une trame valide. */
+    if (user->team != active) return EXIT_FAILURE;
+    if (user->role != expected_role) return EXIT_FAILURE;
 
     return EXIT_SUCCESS;
 }
@@ -331,8 +415,34 @@ int request_preguess(Codenames* codenames, TcpClient* client, char* message, Arg
         return EXIT_FAILURE;
     }
 
+    /* Un en-tête nu donne argc == 0 et argv == NULL : sans ce garde, l'accès
+       ci-dessous déréférence NULL et fait tomber tout le serveur. */
+    if (!args_require(args, 2)) {
+        printf("Invalid preguess from client %d\n", client->id);
+        send_server_error(codenames, client, "Invalid preguess format");
+        return EXIT_FAILURE;
+    }
+
+    // Vérifie que c'est bien le tour d'un agent
+    if (lobby->game->state != GAMESTATE_TURN_RED_AGENT && lobby->game->state != GAMESTATE_TURN_BLUE_AGENT) {
+        send_server_error(codenames, client, "It's not the agent's turn");
+        return EXIT_FAILURE;
+    }
+
+    // Seul un agent de l'équipe dont c'est le tour peut pré-sélectionner une carte
+    if (user_can_act(lobby, client->id, ROLE_AGENT) != EXIT_SUCCESS) {
+        send_server_error(codenames, client, "You are not an agent of the active team");
+        return EXIT_FAILURE;
+    }
+
     int word_index = atoi((char*)args.argv[0]);
     int selected = atoi((char*)args.argv[1]);
+
+    if (word_index < 0 || word_index >= lobby->game->nb_words) {
+        send_server_error(codenames, client, "Invalid word index");
+        return EXIT_FAILURE;
+    }
+    selected = (selected != 0) ? 1 : 0;
 
     // Diffuse la carte sélectionné et le nouveau gamestate à tous les joueurs du lobby
     char msg[64];
@@ -377,15 +487,22 @@ int request_guess_card(Codenames* codenames, TcpClient* client, char* message, A
     }
 
     // Vérifie les arguments: card_index
-    if (args.argc < 1) {
+    if (!args_require(args, 1)) {
         printf("Invalid guess card from client %d: \"%s\"\n", client->id, message);
-        char msg[64];
-        format_to(msg, sizeof(msg), "%d %s", MSG_SERVER_ERROR, "Invalid card index");
-        tcp_send_to_client(codenames, client->id, msg);
+        send_server_error(codenames, client, "Invalid card index");
         return EXIT_FAILURE;
     }
 
-    const char* guessing_name = (args.argc >= 2) ? (char*)args.argv[1] : NULL;
+    // Seul un agent de l'équipe dont c'est le tour peut révéler une carte
+    if (user_can_act(lobby, client->id, ROLE_AGENT) != EXIT_SUCCESS) {
+        printf("Client %d is not an active agent in lobby %d\n", client->id, lobby->id);
+        send_server_error(codenames, client, "You are not an agent of the active team");
+        return EXIT_FAILURE;
+    }
+
+    /* Le nom est purement cosmétique : on ignore celui fourni par le client et on
+       utilise celui enregistré côté serveur pour éviter l'usurpation d'identité. */
+    const char* guessing_name = NULL;
     if ((!guessing_name || guessing_name[0] == '\0') && guessing_user && guessing_user->name && guessing_user->name[0] != '\0') {
         guessing_name = guessing_user->name;
     }
@@ -394,19 +511,15 @@ int request_guess_card(Codenames* codenames, TcpClient* client, char* message, A
     }
 
     int word_index = atoi((char*)args.argv[0]);
-    if (word_index < -1 || word_index >= 25) {
+    if (word_index < -1 || word_index >= lobby->game->nb_words) {
         printf("Invalid word index from client %d: %d\n", client->id, word_index);
-        char msg[64];
-        format_to(msg, sizeof(msg), "%d %s", MSG_SERVER_ERROR, "Invalid word index");
-        tcp_send_to_client(codenames, client->id, msg);
+        send_server_error(codenames, client, "Invalid word index");
         return EXIT_FAILURE;
     }
 
     if (lobby->game->can_guess <= 0) {
         printf("No guesses left for client %d in lobby %d\n", client->id, lobby->id);
-        char msg[64];
-        format_to(msg, sizeof(msg), "%d %s", MSG_SERVER_ERROR, "No guesses left");
-        tcp_send_to_client(codenames, client->id, msg);
+        send_server_error(codenames, client, "No guesses left");
         return EXIT_FAILURE;
     }
 

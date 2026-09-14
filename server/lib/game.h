@@ -99,6 +99,9 @@ typedef struct {
     GameState state;
 } Game;
 
+/** Nombre de mots composant une grille de Codenames. */
+#define GAME_NB_WORDS 25
+
 /**
  * Initialise le gestionnaire de parties (structures internes, RNG, etc.).
  * @return EXIT_SUCCESS en cas de succès, EXIT_FAILURE en cas d'erreur.
@@ -106,13 +109,23 @@ typedef struct {
 int init_game_manager();
 
 /**
- * Récupère tous les mots selon la difficulté choisie.
- * @param difficulty Niveau de difficulté (DIFFICULTY_EASY ou DIFFICULTY_HARD).
- * @return Un tableau de chaînes (char*) contenant les mots,
- *         ou NULL en cas d'erreur. La gestion mémoire est à la
- *         charge de l'appelant.
+ * Retourne l'équipe dont c'est le tour pour un état de partie donné.
+ * @param state État courant de la partie.
+ * @return TEAM_RED, TEAM_BLUE, ou TEAM_NONE si aucune équipe n'est active.
  */
-char** fetchWords(WordsDifficulty difficulty);
+Team active_team_of(GameState state);
+
+/**
+ * Libère une partie et sa grille de mots. Tolère un pointeur NULL.
+ * @param game Partie à détruire.
+ * @return EXIT_SUCCESS si la partie a été libérée, EXIT_FAILURE si game est NULL.
+ */
+int destroy_game(Game* game);
+
+/**
+ * Libère les listes de mots chargées par init_game_manager().
+ */
+void destroy_game_manager(void);
 
 /**
  * Génère un tableau de mots pour une partie.

@@ -18,7 +18,7 @@ static void crossfader_load_saved_value_if_enabled(Crossfader* cf) {
     if (!key) return;
 
     char buf[256] = {0};
-    if (read_property(buf, key) == EXIT_SUCCESS) {
+    if (read_property(buf, sizeof(buf), key) == EXIT_SUCCESS) {
         cf->cfg->value = atoi(buf);
     }
 }

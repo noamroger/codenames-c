@@ -22,11 +22,13 @@ typedef struct ListNode {
  * Liste chaînée générique avec identifiant unique.
  * @param id identifiant unique de la liste (attribué automatiquement).
  * @param head pointeur vers le premier noeud, ou NULL si vide.
+ * @param tail pointeur vers le dernier noeud, pour un ajout en O(1).
  * @param size nombre d'éléments dans la liste.
  */
 typedef struct List {
     int id;
     ListNode* head;
+    ListNode* tail;
     int size;
 } List;
 

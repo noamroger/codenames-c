@@ -39,8 +39,19 @@ SDL_LDFLAGS_BASE := $(shell pkg-config --libs sdl2 2>/dev/null || ./SDL2/bin/sdl
 SDL_LDFLAGS := $(SDL_LDFLAGS_BASE) -L./SDL2/lib -lSDL2_image -lSDL2_ttf -lSDL2_mixer
 
 CPPFLAGS := -D_GNU_SOURCE -I./lib $(SDL_CFLAGS) -DCODENAMES_VERSION=\"$(VERSION)\"
-CFLAGS   := -Wall -Wextra -O2 -MMD -MP -finput-charset=UTF-8
-LDFLAGS  := $(SDL_LDFLAGS) -lm $(RPATH_FLAGS) $(EXTRA_NET_LIBS)
+
+# Durcissement : le client parse des données venues du réseau, ces protections
+# transforment un éventuel débordement en arrêt net plutôt qu'en exécution de code.
+HARDEN_CFLAGS  := -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
+                  -Wformat -Wformat-security
+HARDEN_LDFLAGS :=
+ifneq ($(OS),Windows_NT)
+HARDEN_CFLAGS  += -fPIE
+HARDEN_LDFLAGS += -pie -Wl,-z,relro,-z,now
+endif
+
+CFLAGS   := -Wall -Wextra -O2 -MMD -MP -finput-charset=UTF-8 $(HARDEN_CFLAGS)
+LDFLAGS  := $(SDL_LDFLAGS) -lm $(RPATH_FLAGS) $(EXTRA_NET_LIBS) $(HARDEN_LDFLAGS)
 
 # =========================
 # Sources

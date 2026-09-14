@@ -27,6 +27,7 @@
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
+#include <signal.h>
 #endif
 
 #ifdef _WIN32

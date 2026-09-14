@@ -1,6 +1,29 @@
 #include "../lib/all.h"
 
+/** Passe à 0 sur SIGINT/SIGTERM pour sortir proprement de la boucle principale. */
+static volatile sig_atomic_t server_running = 1;
+
+#ifndef _WIN32
+static void handle_shutdown_signal(int signum) {
+    (void)signum;
+    server_running = 0;
+}
+#endif
+
 int main(int argc, char* argv[]) {
+
+#ifndef _WIN32
+    /* Sans cela, écrire vers un client parti brutalement (RST) lève SIGPIPE et
+       termine le processus : n'importe quel joueur pouvait tuer le serveur et
+       toutes les parties en cours en se déconnectant sèchement. */
+    signal(SIGPIPE, SIG_IGN);
+
+    /* Arrêt propre : ferme les lobbies et libère les ressources au lieu de
+       laisser le noyau tuer le processus (le code de nettoyage placé après la
+       boucle était jusqu'ici inatteignable). */
+    signal(SIGINT, handle_shutdown_signal);
+    signal(SIGTERM, handle_shutdown_signal);
+#endif
 
     int port = 0;
     // Parse command line arguments
@@ -33,7 +56,13 @@ int main(int argc, char* argv[]) {
 
     // Initialisations diverses
     srand(time(NULL));
-    init_game_manager();
+
+    /* Sans listes de mots chargées, aucune partie ne peut démarrer : mieux vaut
+       refuser de démarrer que planter au premier lancement de partie. */
+    if (init_game_manager() != EXIT_SUCCESS) {
+        fprintf(stderr, "Failed to load word lists from assets/. Aborting.\n");
+        return EXIT_FAILURE;
+    }
 
     Codenames* codenames = malloc(sizeof(Codenames));
     if (codenames == NULL) {
@@ -62,13 +91,15 @@ int main(int argc, char* argv[]) {
     }
 
     // Boucle d'execution
-    while(1) {
+    while (server_running) {
         tcp_server_tick(codenames);
     }
 
     // Cleanup
+    printf("\nShutting down, closing lobbies...\n");
     destroy_lobby_manager(codenames, codenames->lobby);
     tcp_server_destroy(codenames->tcp);
+    destroy_game_manager();
     free(codenames);
 
     printf("Server shutting down.\n");

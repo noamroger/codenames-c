@@ -196,7 +196,9 @@ int valid_hint(const char* hint, Card card_words[NB_WORDS]) {
     int threshold = (hint_len == 4) ? 2 : 3;
 
     for (int i = 0; i < NB_WORDS; i++) {
-        if (!card_words[i].word || card_words[i].revealed) continue;
+        /* word est un tableau : tester le pointeur était toujours vrai et ne
+           filtrait donc jamais les cartes vides. */
+        if (card_words[i].word[0] == '\0' || card_words[i].revealed) continue;
         int distance = levenshtein(hint, card_words[i].word);
         int contain = word_contains(hint, card_words[i].word);
         if (distance >= 0 && (distance < threshold || contain)) {

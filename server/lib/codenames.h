@@ -18,7 +18,7 @@
 typedef struct Codenames {
     TcpServer* tcp;
     LobbyManager* lobby;
-    char version[16];
+    char version[32];
 } Codenames;
 
 #endif // CODENAMES_H

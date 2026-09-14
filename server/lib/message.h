@@ -87,8 +87,26 @@ typedef struct Arguments {
  */
 Arguments parse_arguments(char* message);
 
+/**
+ * Vérifie qu'un message contient au moins `needed` arguments exploitables.
+ * À appeler avant tout accès à args.argv[i] : un client peut toujours envoyer
+ * un en-tête nu, auquel cas argv vaut NULL et argc vaut 0.
+ * @param args Arguments extraits du message.
+ * @param needed Nombre minimal d'arguments attendus.
+ * @return 1 si les arguments sont utilisables, 0 sinon.
+ */
+int args_require(Arguments args, int needed);
+
 /* Forward declaration to avoid circular include with codenames.h */
 typedef struct Codenames Codenames;
+
+/**
+ * Envoie un message d'erreur applicatif (MSG_SERVER_ERROR) à un client.
+ * @param codenames Contexte principal du serveur.
+ * @param client Client destinataire.
+ * @param reason Description courte de l'erreur.
+ */
+void send_server_error(Codenames* codenames, TcpClient* client, const char* reason);
 
 /**
  * Traite un message entrant côté serveur.

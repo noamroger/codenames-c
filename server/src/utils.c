@@ -3,9 +3,55 @@
 #include <sys/types.h>
 #include <errno.h>
 
+#ifdef _WIN32
+#include <bcrypt.h>
+#else
+#include <sys/random.h>
+#endif
+
+/**
+ * Remplit un tampon avec des octets cryptographiquement aléatoires.
+ * Les codes de lobby et les UUID servent d'identifiants : rand(), dont la
+ * graine time(NULL) est devinable, les rendrait énumérables.
+ * @param out Tampon de sortie.
+ * @param len Nombre d'octets à générer.
+ * @return EXIT_SUCCESS si le tampon est rempli, EXIT_FAILURE sinon.
+ */
+static int secure_random_bytes(unsigned char* out, size_t len) {
+    if (!out || len == 0) return EXIT_FAILURE;
+
+#ifdef _WIN32
+    if (BCryptGenRandom(NULL, out, (ULONG)len, BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0) {
+        return EXIT_SUCCESS;
+    }
+#else
+    size_t filled = 0;
+    while (filled < len) {
+        ssize_t got = getrandom(out + filled, len - filled, 0);
+        if (got <= 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        filled += (size_t)got;
+    }
+    if (filled == len) return EXIT_SUCCESS;
+
+    /* Repli portable si getrandom n'est pas disponible sur la plateforme. */
+    FILE* urandom = fopen("/dev/urandom", "rb");
+    if (urandom) {
+        size_t read_bytes = fread(out, 1, len, urandom);
+        fclose(urandom);
+        if (read_bytes == len) return EXIT_SUCCESS;
+    }
+#endif
+
+    return EXIT_FAILURE;
+}
+
 int randint(int min, int max) {
     // Retourne un entier aléatoire entre min et max inclus
     // Formule : min + rand() / (RAND_MAX / (max - min + 1) + 1)
+    if (max <= min) return min; // évite une division par zéro si la plage est vide
     int range = max - min + 1;
     return min + rand() / (RAND_MAX / range + 1);
 }
@@ -74,11 +120,23 @@ int format_to(char *buf, size_t size, const char *fmt, ...) {
 }
 
 char* generate_code() {
-    char buffer[6];
-    for (int i = 0; i < 5; i++) {
-        buffer[i] = '0' + rand() % 10;
+    /* Alphabet sans caractères ambigus (I, L, O) pour rester dictable à l'oral.
+       Exactement 32 symboles : le modulo sur un octet est donc sans biais.
+       32^6 ≈ 1,07 milliard de codes, contre 100 000 auparavant. */
+    static const char alphabet[] = "0ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    const size_t alphabet_size = sizeof(alphabet) - 1;
+
+    unsigned char raw[LOBBY_CODE_LEN];
+    if (secure_random_bytes(raw, sizeof(raw)) != EXIT_SUCCESS) {
+        fprintf(stderr, "generate_code: no secure random source available\n");
+        return NULL;
     }
-    buffer[5] = '\0';
+
+    char buffer[LOBBY_CODE_LEN + 1];
+    for (size_t i = 0; i < LOBBY_CODE_LEN; i++) {
+        buffer[i] = alphabet[raw[i] % alphabet_size];
+    }
+    buffer[LOBBY_CODE_LEN] = '\0';
 
     return strdup(buffer);
 }
@@ -86,19 +144,32 @@ char* generate_code() {
 /**
  * Génère une chaîne UUID v4-like aléatoire (format 8-4-4-4-12).
  */
-static void random_uuid_string(char* out, size_t size) {
+static int random_uuid_string(char* out, size_t size) {
     const char hex[] = "0123456789abcdef";
     // Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx  (36 chars + '\0')
-    if (size < 37) return;
+    if (size < 37) return EXIT_FAILURE;
+
+    /* 16 octets issus du CSPRNG, mis en forme en UUID v4 (RFC 4122). */
+    unsigned char raw[16];
+    if (secure_random_bytes(raw, sizeof(raw)) != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+    raw[6] = (unsigned char)((raw[6] & 0x0F) | 0x40); // version 4
+    raw[8] = (unsigned char)((raw[8] & 0x3F) | 0x80); // variante RFC 4122
+
     int pos = 0;
+    int byte_index = 0;
     int lengths[] = {8, 4, 4, 4, 12};
     for (int g = 0; g < 5; g++) {
         if (g > 0) out[pos++] = '-';
-        for (int i = 0; i < lengths[g]; i++) {
-            out[pos++] = hex[rand() % 16];
+        for (int i = 0; i < lengths[g]; i += 2) {
+            unsigned char b = raw[byte_index++];
+            out[pos++] = hex[(b >> 4) & 0x0F];
+            out[pos++] = hex[b & 0x0F];
         }
     }
     out[pos] = '\0';
+    return EXIT_SUCCESS;
 }
 
 /**
@@ -139,7 +210,10 @@ char* generate_uuid(const char* uuids_path) {
     int max_attempts = 1000;
     int found = 0;
     for (int i = 0; i < max_attempts; i++) {
-        random_uuid_string(uuid, sizeof(uuid));
+        if (random_uuid_string(uuid, sizeof(uuid)) != EXIT_SUCCESS) {
+            fprintf(stderr, "generate_uuid: no secure random source available\n");
+            return NULL;
+        }
         if (!uuid_exists_in_file(uuids_path, uuid)) {
             found = 1;
             break;

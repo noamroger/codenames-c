@@ -5,8 +5,15 @@
 
 #define BUFFER_SIZE 1024
 #define APP_PING_INTERVAL_MS 2000U
+/** Taille maximale d'une trame applicative reçue du serveur. */
+#define RX_MAX_LINE 1024
 char buffer[BUFFER_SIZE];
 static Uint32 last_app_ping_sent_at = 0;
+
+/* Tampon d'accumulation pour le cadrage des trames (voir tick_tcp). */
+static char rx_line[RX_MAX_LINE + 1];
+static size_t rx_len = 0;
+static int rx_overflow = 0;
 
 static int network_initialized = 0;
 
@@ -21,23 +28,6 @@ static int ensure_network_initialized(void) {
 #endif
     network_initialized = 1;
     return 0;
-}
-
-static char* next_line_token(char* str, char** saveptr) {
-    char* start = str ? str : *saveptr;
-    if (!start || *start == '\0') {
-        if (saveptr) *saveptr = NULL;
-        return NULL;
-    }
-
-    char* end = strchr(start, '\n');
-    if (end) {
-        *end = '\0';
-        if (saveptr) *saveptr = end + 1;
-    } else {
-        if (saveptr) *saveptr = NULL;
-    }
-    return start;
 }
 
 static void maybe_send_app_ping(AppContext* context) {
@@ -126,19 +116,41 @@ int tick_tcp(AppContext* context) {
 
     /* Message venant du serveur */
     if (FD_ISSET(sock, &readfds)) {
-        int bytes = recv(sock, buffer, BUFFER_SIZE - 1, 0);
+        int bytes = recv(sock, buffer, BUFFER_SIZE, 0);
         if (bytes <= 0) {
             printf("Server disconnected\n");
             return EXIT_SUCCESS;
         }
-        buffer[bytes] = '\0';
 
-        // Traiter chaque message séparé par '\n'
-        char* saveptr;
-        char* line = next_line_token(buffer, &saveptr);
-        while (line != NULL) {
+        /* TCP ne préserve pas les frontières de message : on accumule jusqu'au
+           '\n' pour ne pas couper une trame arrivée en deux paquets. */
+        for (int offset = 0; offset < bytes; offset++) {
+            char c = buffer[offset];
+
+            if (c != '\n') {
+                if (rx_len >= RX_MAX_LINE) {
+                    rx_overflow = 1; // ligne aberrante : on la jette
+                    rx_len = 0;
+                    continue;
+                }
+                rx_line[rx_len++] = c;
+                continue;
+            }
+
+            if (rx_overflow) {
+                rx_overflow = 0;
+                rx_len = 0;
+                continue;
+            }
+
+            if (rx_len > 0 && rx_line[rx_len - 1] == '\r') rx_len--; // tolère CRLF
+            rx_line[rx_len] = '\0';
+            rx_len = 0;
+
+            if (rx_line[0] == '\0') continue;
+
             // Copier la ligne car on_message utilise strtok qui écraserait notre état
-            char* line_copy = strdup(line);
+            char* line_copy = strdup(rx_line);
             if (line_copy) {
                 // printf("[SERVER] %s\n", line_copy);
                 int ret = on_message(context, line_copy);
@@ -147,7 +159,6 @@ int tick_tcp(AppContext* context) {
                     return ret;
                 }
             }
-            line = next_line_token(NULL, &saveptr);
         }
 
         return EXIT_SUCCESS;
@@ -196,14 +207,18 @@ int is_tcp_local_server(int sock) {
 }
 
 int send_tcp(int sock, const char* payload) {
-    
-    char* message = malloc(strlen("CODENAMES ") + strlen(payload) + 1);
+    if (sock < 0 || !payload) return -1;
+
+    /* +1 pour le '\n' de fin de trame : le serveur découpe les messages
+       sur ce séparateur, sans lui deux envois consécutifs se collent. */
+    size_t total = strlen("CODENAMES ") + strlen(payload) + 2;
+    char* message = malloc(total);
     if (!message) {
         perror("malloc");
         return -1;
     }
 
-    sprintf(message, "CODENAMES %s", payload);
+    snprintf(message, total, "CODENAMES %s\n", payload);
 #ifdef _WIN32
     int result = send(sock, message, (int)strlen(message), 0);
 #else

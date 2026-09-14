@@ -18,6 +18,9 @@ typedef struct Codenames Codenames;
 #define MAX_LOBBIES 50
 #define MAX_USERS 8
 
+/** Longueur d'un code de lobby (hors terminateur). */
+#define LOBBY_CODE_LEN 6
+
 /**
  * États possibles d'un lobby.
  * @param LB_STATUS_WAITING lobby en attente (pas encore en partie).
@@ -43,7 +46,7 @@ typedef enum LobbyStatus {
 typedef struct Lobby {
     int id;
     int owner_id;
-    char code[6];
+    char code[LOBBY_CODE_LEN + 1];
     LobbyStatus status;
     User* users[MAX_USERS];
     int nb_players;
@@ -98,6 +101,17 @@ int leave_lobby(Lobby* lobby, User* user);
  * @return EXIT_SUCCESS si la partie a démarré avec succès, EXIT_FAILURE si une erreur est survenue (ex: nombre de joueurs insuffisant).
  */
 User* find_user_by_id(Lobby* lobby, int id);
+
+/**
+ * Vérifie qu'un client a le droit d'agir dans le tour en cours.
+ * Contrôle l'appartenance au lobby, l'équipe active et le rôle attendu.
+ * Le serveur étant autoritaire, toute action de jeu doit passer par ce contrôle.
+ * @param lobby Lobby contenant la partie.
+ * @param client_id Identifiant du client demandeur.
+ * @param expected_role Rôle requis pour l'action (ROLE_SPY ou ROLE_AGENT).
+ * @return EXIT_SUCCESS si l'action est autorisée, EXIT_FAILURE sinon.
+ */
+int user_can_act(Lobby* lobby, int client_id, UserRole expected_role);
 
 /** Trouve un lobby par l'identifiant de son propriétaire.
  * @param manager Gestionnaire de lobbies à rechercher.

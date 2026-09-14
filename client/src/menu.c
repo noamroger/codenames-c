@@ -675,7 +675,7 @@ static void menu_apply_random_player_name_if_needed(AppContext* context) {
     if (context->player_name && context->player_name[0] != '\0') return;
 
     char saved[INPUT_DEFAULT_MAX + 1] = {0};
-    int has_saved = (read_property(saved, "PLAYER_NAME") == EXIT_SUCCESS && saved[0] != '\0');
+    int has_saved = (read_property(saved, sizeof(saved), "PLAYER_NAME") == EXIT_SUCCESS && saved[0] != '\0');
     if (has_saved) return;
 
     FILE* uf = fopen("assets/misc/usernames.txt", "r");

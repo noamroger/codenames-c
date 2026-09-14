@@ -9,7 +9,10 @@ FILE* open_properties(const char* mode) {
     return f;
 }
 
-int read_property(char* buf, const char* property) {
+int read_property(char* buf, size_t buf_size, const char* property) {
+    if (!buf || buf_size == 0) return EXIT_FAILURE;
+    buf[0] = '\0'; // l'appelant doit pouvoir tester le résultat même en cas d'échec
+
     FILE* f = open_properties("r");
     if (!f) return EXIT_FAILURE;
 
@@ -28,7 +31,9 @@ int read_property(char* buf, const char* property) {
             while (*vp == ' ') vp++;
 
             if (strcmp(key_buf, property) == 0) {
-                strcpy(buf, vp);
+                /* Copie bornée : la valeur du fichier peut faire 255 octets
+                   alors que les appelants passent des tampons de 16. */
+                snprintf(buf, buf_size, "%s", vp);
                 fclose(f);
                 return EXIT_SUCCESS;
             }

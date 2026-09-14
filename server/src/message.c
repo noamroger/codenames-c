@@ -1,9 +1,21 @@
 #include "../lib/all.h"
 
 MessageType fetch_header(char* message) {
-    MessageType header;
-    if (!sscanf(message, "%d", (int*)&header)) return MSG_UNKNOWN;
-    return header;
+    int value = 0;
+    /* sscanf renvoie EOF (-1) sur une chaîne vide et 0 si aucune conversion :
+       les deux cas doivent donner MSG_UNKNOWN, sinon `header` reste non initialisé. */
+    if (!message || sscanf(message, "%d", &value) != 1) return MSG_UNKNOWN;
+    return (MessageType)value;
+}
+
+int args_require(Arguments args, int needed) {
+    return args.argv != NULL && args.argc >= needed;
+}
+
+void send_server_error(Codenames* codenames, TcpClient* client, const char* reason) {
+    char msg[192];
+    format_to(msg, sizeof(msg), "%d %s", MSG_SERVER_ERROR, reason ? reason : "Invalid request");
+    tcp_send_to_client(codenames, client->id, msg);
 }
 
 Arguments parse_arguments(char* message) {
@@ -30,7 +42,11 @@ Arguments parse_arguments(char* message) {
 
 int on_message(Codenames* codenames, TcpClient* client, char* message) {
     MessageType header = fetch_header(message);
-    message += number_length((int)header) + 1; // Skip header et espace
+
+    /* Avance après l'en-tête et son espace, sans jamais dépasser le '\0' final. */
+    size_t skip = (size_t)number_length((int)header) + 1;
+    size_t available = strlen(message);
+    message += (skip > available) ? available : skip;
 
     // printf("[MSG] %d %s\n", header, message);
 
@@ -104,32 +120,37 @@ int on_message(Codenames* codenames, TcpClient* client, char* message) {
 
 int on_leave(Codenames* codenames, TcpClient* client) {
     // Handle client disconnection
+    Lobby* lobby = find_lobby_by_playerid(codenames->lobby, client->id);
+    if (!lobby) return EXIT_SUCCESS;
 
-    Lobby* owned_lobby = find_lobby_by_ownerid(codenames->lobby, client->id);
-    if (owned_lobby) {
-        int id = owned_lobby->id;
+    User* user = find_user_by_id(lobby, client->id);
+    if (user) {
+        /* Retirer effectivement le joueur : sans cela son User restait dans le
+           lobby après la déconnexion, et l'emplacement TCP recyclé donnait au
+           client suivant la place, le rôle et l'équipe du précédent. */
+        leave_lobby(lobby, user);
+    }
 
-        /* S'il reste des joueurs dans le lobby, on ne le détruit pas et on passe l'owner à un des joueurs restants */
-        if (owned_lobby->nb_players > 1) {
-            owned_lobby->owner_id = owned_lobby->users[0]->id;
-            printf("Client %d (%s) is now the owner of lobby %d\n", owned_lobby->owner_id, owned_lobby->users[0]->name, id);
-        } else {
-            destroy_lobby(codenames, owned_lobby);
-            printf("Destroyed lobby %d owned by client %d\n", id, client->id);
-        }
+    // Le lobby vide n'a plus de raison d'exister
+    if (lobby->nb_players == 0) {
+        int id = lobby->id;
+        destroy_lobby(codenames, lobby);
+        printf("Destroyed empty lobby %d after client %d left\n", id, client->id);
+        return EXIT_SUCCESS;
+    }
 
+    // Transférer la propriété si le partant en était le propriétaire
+    if (lobby->owner_id == client->id) {
+        lobby->owner_id = lobby->users[0]->id;
+        printf("Client %d (%s) is now the owner of lobby %d\n",
+               lobby->owner_id, lobby->users[0]->name, lobby->id);
     }
 
     // Informer les autres joueurs du lobby qu'un joueur a quitté
-    Lobby* player_lobby = find_lobby_by_playerid(codenames->lobby, client->id);
-    if (player_lobby) {
-        char msg[64];
-        format_to(msg, sizeof(msg), "%d %d", MSG_PLAYERLEFT, client->id);
-        for (int i = 0; i < player_lobby->nb_players; i++) {
-            if (player_lobby->users[i]->id != client->id) {
-                tcp_send_to_client(codenames, player_lobby->users[i]->id, msg);
-            }
-        }
+    char msg[64];
+    format_to(msg, sizeof(msg), "%d %d", MSG_PLAYERLEFT, client->id);
+    for (int i = 0; i < lobby->nb_players; i++) {
+        tcp_send_to_client(codenames, lobby->users[i]->id, msg);
     }
 
     return EXIT_SUCCESS;

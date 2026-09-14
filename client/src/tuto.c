@@ -344,7 +344,7 @@ static void tutorial_render_slide(SDL_Renderer* renderer) {
 
 static int tutorial_read_seen_flag(void) {
     char buf[32] = {0};
-    if (read_property(buf, "SEEN_TUTO") != EXIT_SUCCESS) {
+    if (read_property(buf, sizeof(buf), "SEEN_TUTO") != EXIT_SUCCESS) {
         if (write_property("SEEN_TUTO", "0") != EXIT_SUCCESS) {
             printf("Tutorial: failed to initialize SEEN_TUTO=0\n");
         }

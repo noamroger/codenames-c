@@ -1,24 +1,37 @@
 #include "../lib/all.h"
 
 MessageType fetch_header(char* message) {
-    MessageType header;
-    if (!sscanf(message, "%d", (int*)&header)) return MSG_UNKNOWN;
-    return header;
+    int value = 0;
+    /* sscanf renvoie EOF (-1) sur une chaîne vide et 0 si aucune conversion :
+       les deux cas doivent donner MSG_UNKNOWN, sinon `header` reste non initialisé. */
+    if (!message || sscanf(message, "%d", &value) != 1) return MSG_UNKNOWN;
+    return (MessageType)value;
 }
 
 Arguments parse_arguments(char* message) {
-    Arguments args;
+    Arguments args = {0};
     char* token = strtok(message, " ");
-    args.argc = 0;
-    args.argv = NULL;
 
     while (token != NULL) {
+        char** resized = realloc(args.argv, (size_t)(args.argc + 1) * sizeof(char*));
+        if (!resized) {
+            /* Sans ce contrôle, l'échec de realloc écrasait args.argv par NULL
+               puis était déréférencé immédiatement après. */
+            free(args.argv);
+            args.argv = NULL;
+            args.argc = 0;
+            return args;
+        }
+        args.argv = resized;
+        args.argv[args.argc] = token;
         args.argc++;
-        args.argv = realloc(args.argv, args.argc * sizeof(char*));
-        ((char**)args.argv)[args.argc - 1] = token;
         token = strtok(NULL, " ");
     }
     return args;
+}
+
+int args_require(Arguments args, int needed) {
+    return args.argv != NULL && args.argc >= needed;
 }
 
 static SDL_Color message_hint_bar_team_color(Team team) {
@@ -75,6 +88,11 @@ static int message_update_user_name(User* user, const char* name) {
 static User* message_upsert_lobby_user(Lobby* lobby, int user_id, const char* name, UserRole role, Team team) {
     if (!lobby || user_id < 0) return NULL;
 
+    /* Rôle et équipe viennent du réseau et servent ensuite à indexer les
+       ressources d'affichage : on les ramène dans leur domaine valide. */
+    if (role < ROLE_NONE || role > ROLE_AGENT) role = ROLE_NONE;
+    if (team < TEAM_NONE || team > TEAM_BLACK) team = TEAM_NONE;
+
     int slot = message_find_user_slot_by_id(lobby, user_id);
     if (slot >= 0) {
         User* user = lobby->users[slot];
@@ -116,7 +134,11 @@ static void message_sync_local_user_in_lobby(AppContext* context) {
 
 int on_message(AppContext* context, char* message) {
     MessageType header = fetch_header(message);
-    message += number_length((int)header) + 1; // Skip header et espace
+
+    /* Avance après l'en-tête et son espace, sans jamais dépasser le '\0' final. */
+    size_t skip = (size_t)number_length((int)header) + 1;
+    size_t available = strlen(message);
+    message += (skip > available) ? available : skip;
 
     /* Keep a raw copy of the message (everything after the header)
        so we can print the full argument string later even though
@@ -128,7 +150,7 @@ int on_message(AppContext* context, char* message) {
     switch (header) {
 
         case MSG_SERVER_ERROR:
-            if (args.argc < 1) {
+            if (!args_require(args, 1)) {
                 printf("Invalid error message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -141,7 +163,7 @@ int on_message(AppContext* context, char* message) {
             break;
 
         case MSG_INFO:
-            if (args.argc < 1) {
+            if (!args_require(args, 1)) {
             printf("Invalid info message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -153,7 +175,7 @@ int on_message(AppContext* context, char* message) {
             break;
 
         case MSG_CREATELOBBY: // Confirmation de la création du lobby, avec l'id du lobby créé
-            if (args.argc < 2) {
+            if (!args_require(args, 2)) {
                 printf("Invalid create lobby message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -166,7 +188,7 @@ int on_message(AppContext* context, char* message) {
 
         case MSG_JOINLOBBY:
             // Handle join lobby
-            if (args.argc >= 2) {
+            if (args_require(args, 2)) {
                 struct_lobby_init(context->lobby, atoi((char*)args.argv[0]), (char*)args.argv[1]);
                 message_sync_local_user_in_lobby(context);
             }
@@ -183,7 +205,7 @@ int on_message(AppContext* context, char* message) {
             break;
         
         case MSG_PLAYERJOINED: {
-            if (args.argc < 4) {
+            if (!args_require(args, 4)) {
                 printf("Invalid player joined message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -205,7 +227,7 @@ int on_message(AppContext* context, char* message) {
         }
         
         case MSG_PLAYERLEFT: {
-            if (args.argc < 1) {
+            if (!args_require(args, 1)) {
                 printf("Invalid player left message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -224,7 +246,7 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_CHOOSE_ROLE: {
-            if (args.argc < 3) {
+            if (!args_require(args, 3)) {
                 printf("Invalid choose role message from server : \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -255,7 +277,7 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_STARTGAME: {
-            if (args.argc < 2) {
+            if (!args_require(args, 2)) {
                 printf("Invalid start game message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -271,13 +293,23 @@ int on_message(AppContext* context, char* message) {
             }
             game->state = (GameState)atoi((char*)args.argv[0]);
             game->nb_words = atoi((char*)args.argv[1]);
+
+            /* Valeur venue du réseau : sans borne, sizeof(Card) * nb_words
+               déborde et renvoie un tampon trop petit pour les MSG_WORDDATA. */
+            if (game->nb_words < 1 || game->nb_words > GAME_MAX_WORDS) {
+                printf("Invalid word count from server: %d\n", game->nb_words);
+                free(game);
+                status = EXIT_FAILURE;
+                goto cleanup;
+            }
+
             game->current_hint[0] = '\0';
             game->current_hint_count = 0;
             game->winner = TEAM_NONE;
             history_reset(&game->red_history);
             history_reset(&game->blue_history);
             printf("Starting game with state %d and %d words\n", game->state, game->nb_words);
-            game->cards = (Card*)malloc(sizeof(Card) * game->nb_words);
+            game->cards = (Card*)calloc((size_t)game->nb_words, sizeof(Card));
             if (!game->cards) {
                 printf("Failed to allocate memory for game cards\n");
                 free(game);
@@ -292,8 +324,15 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_WORDDATA: {
-            if (args.argc < 5) {
+            if (!args_require(args, 5)) {
                 printf("Invalid word data message from server: \"%s\"\n", message);
+                status = EXIT_FAILURE;
+                goto cleanup;
+            }
+
+            /* Une grille doit avoir été annoncée par MSG_STARTGAME au préalable. */
+            if (!context->lobby || !context->lobby->game || !context->lobby->game->cards) {
+                printf("Received word data before the game was started, ignoring\n");
                 status = EXIT_FAILURE;
                 goto cleanup;
             }
@@ -304,21 +343,33 @@ int on_message(AppContext* context, char* message) {
             CardType type = (CardType)atoi((char*)args.argv[3]);
             int revealed = atoi((char*)args.argv[4]);
 
+            /* Index piloté par le serveur : sans ce contrôle il sert d'écriture
+               arbitraire dans le tas. */
+            if (wordid < 0 || wordid >= context->lobby->game->nb_words) {
+                printf("Invalid card index from server: %d\n", wordid);
+                status = EXIT_FAILURE;
+                goto cleanup;
+            }
+            if (team < TEAM_NONE || team > TEAM_BLACK) team = TEAM_NONE;
+            if (type < CT_MALE || type > CT_DOG) type = CT_MALE;
+
             printf("Word data received: %s (Team: %d, Type: %d, Revealed: %d)\n", word, team, type, revealed);
 
             // Prétraitement qui remet les espaces
             for (int i = 0; word[i] != '\0'; i++) {
                 if (word[i] == '_') word[i] = ' ';
             }
-            
-            strcpy(context->lobby->game->cards[wordid].word, word);
-            context->lobby->game->cards[wordid].team = team;
-            context->lobby->game->cards[wordid].type = type;
-            context->lobby->game->cards[wordid].revealed = revealed;
-            context->lobby->game->cards[wordid].selected = False;
-            context->lobby->game->cards[wordid].is_pressed = False;
-            context->lobby->game->cards[wordid].is_hovered = False;
-            context->lobby->game->cards[wordid].display_word_once_revealed = False;
+
+            Card* card = &context->lobby->game->cards[wordid];
+            /* Copie bornée : le mot vient du réseau et peut dépasser word[32]. */
+            snprintf(card->word, sizeof(card->word), "%s", word);
+            card->team = team;
+            card->type = type;
+            card->revealed = (revealed != 0);
+            card->selected = False;
+            card->is_pressed = False;
+            card->is_hovered = False;
+            card->display_word_once_revealed = False;
 
             if (wordid == context->lobby->game->nb_words - 1) {
                 context->app_state = APP_STATE_PLAYING;
@@ -328,7 +379,7 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_SUBMIT_HINT: {
-            if (args.argc < 4) {
+            if (!args_require(args, 4)) {
                 printf("Invalid submit hint message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -412,7 +463,7 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_PREGUESS: {
-            if (args.argc < 3) {
+            if (!args_require(args, 3)) {
                 printf("Invalid preguess message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -437,8 +488,16 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_GUESS_CARD: {
-            if (args.argc < 2) {
+            if (!args_require(args, 2)) {
                 printf("Invalid guess card message from server: \"%s\"\n", message);
+                status = EXIT_FAILURE;
+                goto cleanup;
+            }
+
+            /* Ce message n'a de sens qu'avec une partie en cours : les accès
+               ci-dessous déréférençaient game sans le vérifier. */
+            if (!context->lobby || !context->lobby->game) {
+                printf("Received guess card without an active game, ignoring\n");
                 status = EXIT_FAILURE;
                 goto cleanup;
             }
@@ -446,15 +505,12 @@ int on_message(AppContext* context, char* message) {
             int word_index = atoi((char*)args.argv[0]);
             GameState new_state = (GameState)atoi((char*)args.argv[1]);
             const char* guessing_agent_name = NULL;
-            if (args.argc >= 4) {
+            if (args_require(args, 4)) {
                 guessing_agent_name = (char*)args.argv[3];
             } else if (word_index == -1 && args.argc >= 3) {
                 guessing_agent_name = (char*)args.argv[2];
             }
-            Team active_team = TEAM_NONE;
-            if (context->lobby && context->lobby->game) {
-                active_team = history_team_from_agent_state(context->lobby->game->state);
-            }
+            Team active_team = history_team_from_agent_state(context->lobby->game->state);
 
             // Partie terminée
             if (args.argc >= 3 && new_state == GAMESTATE_ENDED) {
@@ -465,7 +521,7 @@ int on_message(AppContext* context, char* message) {
                     (context->lobby->game->winner == TEAM_BLUE && context->player_team == TEAM_BLUE)
                 ) {
                     char nb_win[16];
-                    read_property(nb_win, "WIN_COUNT");
+                    read_property(nb_win, sizeof(nb_win), "WIN_COUNT");
                     int win_count = strcmp(nb_win, "")!=0 ? atoi(nb_win) + 1 : 1;
                     format_to(nb_win, sizeof(nb_win), "%d", win_count);
                     write_property("WIN_COUNT", nb_win);
@@ -555,7 +611,7 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_SENDCHAT: {
-            if (args.argc < 2) {
+            if (!args_require(args, 2)) {
                 printf("Invalid chat message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -565,7 +621,7 @@ int on_message(AppContext* context, char* message) {
             int message_start = 1;
             char* sender = (char*)args.argv[0];
 
-            if (args.argc >= 3) {
+            if (args_require(args, 3)) {
                 char* id_end = NULL;
                 long parsed_id = strtol((char*)args.argv[0], &id_end, 10);
                 if (id_end && *id_end == '\0' && parsed_id >= 0 && parsed_id <= 2147483647L) {
@@ -601,7 +657,7 @@ int on_message(AppContext* context, char* message) {
 
         case MSG_REQUESTUUID: {
             // Réception de l'UUID généré par le serveur
-            if (args.argc < 1) {
+            if (!args_require(args, 1)) {
                 printf("Invalid UUID message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -625,7 +681,7 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_SEND_CLIENT_ID: {
-            if (args.argc < 1) {
+            if (!args_require(args, 1)) {
                 printf("Invalid client id message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -639,7 +695,7 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_PING: {
-            if (args.argc < 1) {
+            if (!args_require(args, 1)) {
                 break;
             }
             
@@ -651,7 +707,7 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_SET_WORDS_DIFFICULTY: {
-            if (args.argc < 1) {
+            if (!args_require(args, 1)) {
                 printf("Invalid set words difficulty message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;
@@ -665,7 +721,7 @@ int on_message(AppContext* context, char* message) {
         }
 
         case MSG_SET_NB_ASSASSINS: {
-            if (args.argc < 1) {
+            if (!args_require(args, 1)) {
                 printf("Invalid set nb_assassins message from server: \"%s\"\n", message);
                 status = EXIT_FAILURE;
                 goto cleanup;

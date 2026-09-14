@@ -76,6 +76,16 @@ typedef struct Arguments {
 Arguments parse_arguments(char* message);
 
 /**
+ * Vérifie qu'un message contient au moins `needed` arguments exploitables.
+ * À appeler avant tout accès à args.argv[i] : le serveur peut envoyer un
+ * en-tête nu, auquel cas argv vaut NULL et argc vaut 0.
+ * @param args Arguments extraits du message.
+ * @param needed Nombre minimal d'arguments attendus.
+ * @return 1 si les arguments sont utilisables, 0 sinon.
+ */
+int args_require(Arguments args, int needed);
+
+/**
  * Traite un message reçu du serveur.
  * @param context Contexte SDL du client, nécessaire pour certaines opérations (ex: mise à jour de l'interface).
  * @param message Message brut reçu du serveur.

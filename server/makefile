@@ -20,8 +20,23 @@ RM_RF    := rm -rf $(DIR)
 endif
 
 CPPFLAGS := -I./lib -DCODENAMES_VERSION=\"$(VERSION)\"
-CFLAGS   := -Wall -Wextra -O2 -MMD -MP
-LDFLAGS  :=
+
+# Durcissement : protections anti-débordement de pile, contrôles de bornes sur
+# les fonctions de la libc, et binaire repositionnable (ASLR complet).
+HARDEN_CFLAGS  := -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
+                  -Wformat -Wformat-security
+HARDEN_LDFLAGS :=
+ifneq ($(OS),Windows_NT)
+HARDEN_CFLAGS  += -fPIE
+HARDEN_LDFLAGS += -pie -Wl,-z,relro,-z,now
+endif
+
+CFLAGS   := -Wall -Wextra -O2 -MMD -MP $(HARDEN_CFLAGS)
+LDFLAGS  := $(HARDEN_LDFLAGS)
+
+# Cible de test : recompile tout sous AddressSanitizer + UBSan.
+# Usage : make sanitize && ./build/server-asan -p 4242
+SAN_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1
 
 # =========================
 # Sources
@@ -51,6 +66,10 @@ $(DIR):
 clean:
 	$(RM_RF)
 
+# Build instrumenté pour rejouer les tests de robustesse réseau.
+sanitize: | $(DIR)
+	$(CC) $(SRCS) -o $(DIR)/server-asan $(CPPFLAGS) -Wall -Wextra $(SAN_FLAGS)
+
 -include $(DEPS)
 
-.PHONY: all clean
+.PHONY: all clean sanitize

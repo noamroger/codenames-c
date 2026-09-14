@@ -13,6 +13,7 @@ List* list_create() {
     }
     list->id = list_id_counter++;
     list->head = NULL;
+    list->tail = NULL;
     list->size = 0;
     return list;
 }
@@ -28,6 +29,9 @@ void list_destroy(List* list, void (*free_data)(void*)) {
         free(current);
         current = next;
     }
+    list->head = NULL;
+    list->tail = NULL;
+    list->size = 0;
     free(list);
 }
 
@@ -42,15 +46,14 @@ int list_add(List* list, void* data) {
     node->data = data;
     node->next = NULL;
 
+    /* Le pointeur de queue évite de reparcourir toute la liste à chaque ajout :
+       l'historique de chat (100 messages par lobby) passe de O(n^2) à O(n). */
     if (!list->head) {
         list->head = node;
     } else {
-        ListNode* current = list->head;
-        while (current->next) {
-            current = current->next;
-        }
-        current->next = node;
+        list->tail->next = node;
     }
+    list->tail = node;
     list->size++;
     return EXIT_SUCCESS;
 }
@@ -68,6 +71,7 @@ int list_remove(List* list, void* data) {
             } else {
                 list->head = current->next;
             }
+            if (list->tail == current) list->tail = prev;
             free(current);
             list->size--;
             return EXIT_SUCCESS;

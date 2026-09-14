@@ -30,6 +30,9 @@ int chat_push(Chat* chat, const char* message) {
         if (!oldest) break;
 
         chat->messages->head = oldest->next;
+        /* La liste maintient un pointeur de queue : il doit suivre quand on
+           retire le dernier élément restant, sinon il reste pendouillant. */
+        if (chat->messages->tail == oldest) chat->messages->tail = NULL;
         chat->messages->size--;
 
         free_chat_message(oldest->data);

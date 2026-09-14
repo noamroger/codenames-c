@@ -120,6 +120,11 @@ typedef struct GameHintBarState {
  * @param blue_history historique des mots révélés par l'équipe bleue (contient les infos sur les tours de jeu).
  * @param winner équipe gagnante (TEAM_RED, TEAM_BLUE ou TEAM_NONE si pas encore déterminée).
  */
+/** Borne haute du nombre de cartes acceptées depuis le serveur.
+ *  Une grille standard en compte 25 ; la marge couvre d'éventuelles variantes
+ *  tout en empêchant un serveur hostile de faire déborder l'allocation. */
+#define GAME_MAX_WORDS 64
+
 struct Game {
     Card* cards;
     int nb_words;

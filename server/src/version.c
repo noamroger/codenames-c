@@ -2,7 +2,7 @@
 
 void load_version(Codenames* codenames) {
 
-    char version[16] = {0};
+    char version[24] = {0};
     FILE* v = fopen("./VERSION", "r");
     if (v) {
         if (fgets(version, sizeof(version), v)) {

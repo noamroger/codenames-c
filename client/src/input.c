@@ -494,7 +494,7 @@ Input* input_create(SDL_Renderer* renderer, InputId id, const InputConfig* cfg_i
     /* Load saved player name from properties file if persistence is enabled */
     if (in->cfg->save_player_data && in->id == INPUT_NAME) {
         char saved_name[INPUT_DEFAULT_MAX + 1] = {0};
-        if (read_property(saved_name, "PLAYER_NAME") == EXIT_SUCCESS && saved_name[0] != '\0') {
+        if (read_property(saved_name, sizeof(saved_name), "PLAYER_NAME") == EXIT_SUCCESS && saved_name[0] != '\0') {
             strncpy(in->cfg->text, saved_name, (size_t)in->cfg->maxlen);
             in->cfg->text[in->cfg->maxlen] = '\0';
             in->cfg->len = (int)strlen(in->cfg->text);
